@@ -22,7 +22,7 @@ export const removeNode = (node: Node): Node => {
           ...child.getCssAttributes(),
         };
 
-        const positionalCssAttributes: Attributes = mergeAttributes(
+        const positionalCssAttributes: Attributes = mergePositionalAttributes(
           node.getPositionalCssAttributes(),
           child.getPositionalCssAttributes()
         );
@@ -30,8 +30,8 @@ export const removeNode = (node: Node): Node => {
         node.setCssAttributes(cssAttributes);
         node.setPositionalCssAttributes(positionalCssAttributes);
         node.addAnnotations(replacedChildAnnotation, true);
-
         node.setChildren([]);
+
         return removeNode(node);
       }
 
@@ -40,7 +40,7 @@ export const removeNode = (node: Node): Node => {
         ...child.getCssAttributes(),
       };
 
-      const positionalCssAttributes: Attributes = mergeAttributes(
+      const positionalCssAttributes: Attributes = mergePositionalAttributes(
         node.getPositionalCssAttributes(),
         child.getPositionalCssAttributes()
       );
@@ -75,9 +75,9 @@ export const removeChildrenNode = (node: Node): Node => {
         ...child.getCssAttributes(),
       };
 
-      const positionalCssAttributes: Attributes = mergeAttributes(
+      const positionalCssAttributes: Attributes = mergePositionalAttributes(
         node.getPositionalCssAttributes(),
-        node.getPositionalCssAttributes()
+        child.getPositionalCssAttributes()
       );
 
       node.setCssAttributes(cssAttributes);
@@ -130,6 +130,27 @@ const haveSimlarWidthAndHeight = (
   return similarHeight && similarWidth;
 };
 
+const shouldNodeBeRemoved = (node: Node): boolean => {
+  if (
+    node.getType() === NodeType.GROUP ||
+    node.getType() === NodeType.VISIBLE
+  ) {
+    if (node.getChildren().length !== 1) {
+      return false;
+    }
+
+    if (
+      isEmpty(node.getACssAttribute("background-color")) &&
+      isEmpty(node.getACssAttribute("background")) &&
+      isEmpty(node.getACssAttribute("border-color"))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const filterAttributes = (attribtues: Attributes): Attributes => {
   const result = {};
 
@@ -149,17 +170,17 @@ const filterAttributes = (attribtues: Attributes): Attributes => {
   return result;
 };
 
-const mergeAttributes = (
+const mergePositionalAttributes = (
   parentPosAttributes: Attributes,
   childPosAttributes: Attributes
 ): Attributes => {
   if (
     parentPosAttributes["display"] !== childPosAttributes["display"] ||
     parentPosAttributes["flex-direction"] !==
-      childPosAttributes["flex-direction"] ||
+    childPosAttributes["flex-direction"] ||
     parentPosAttributes["align-items"] !== childPosAttributes["align-items"] ||
     parentPosAttributes["justify-content"] !==
-      childPosAttributes["justify-content"]
+    childPosAttributes["justify-content"]
   ) {
     return {
       ...filterAttributes(parentPosAttributes),

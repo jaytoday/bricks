@@ -13,6 +13,15 @@ export const backgroundColorFilter = (key: string, _: string): boolean => {
   return true;
 };
 
+// widthAndHeightFilter filters width and height
+export const widthAndHeightFilter = (key: string, _: string): boolean => {
+  if (key === "width" || key === "height") {
+    return false;
+  }
+
+  return true;
+};
+
 // absolutePositioningFilter filters non absolute positioning related attributes
 export const absolutePositioningFilter = (key: string, _: string): boolean => {
   const absolutePositioningFilters: string[] = [
@@ -21,6 +30,7 @@ export const absolutePositioningFilter = (key: string, _: string): boolean => {
     "top",
     "left",
     "bottom",
+    "z-index",
   ];
 
   if (absolutePositioningFilters.includes(key)) {
@@ -49,6 +59,10 @@ export const marignFilter = (key: string, _: string): boolean => {
 // values taken from different sources could have a lot of fractional digits.
 // for readability purposes, these numbers should be truncated
 export const truncateNumbers = (value: string): string => {
+  if (isEmpty(value)) {
+    return "";
+  }
+
   if (value.endsWith("px")) {
     const num = parseFloat(value.slice(0, -2));
     return `${toOneDecimal(num)}px`;
@@ -117,6 +131,10 @@ export const filterAttributes = (
 
   if (option.excludeBackgroundColor) {
     filters.push(backgroundColorFilter);
+  }
+
+  if (option.excludeWidthAndHeight) {
+    filters.push(widthAndHeightFilter);
   }
 
   if (option.absolutePositioningFilter) {
@@ -204,4 +222,11 @@ export const shouldUseAsBackgroundImage = (node: Node): boolean => {
   }
 
   return false;
+};
+
+export const doChildrenOverflowParent = (node: Node) => {
+  const [boundingWidth, boundingHeight]: number[] = node.getAbsBoundingBoxWidthAndHeight();
+  const [renderingWidth, renderingHeight]: number[] = node.getRenderingBoxWidthAndHeight();
+
+  return renderingWidth > boundingWidth || renderingHeight > boundingHeight;
 };

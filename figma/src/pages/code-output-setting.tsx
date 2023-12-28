@@ -1,39 +1,23 @@
-import React, { useContext } from "react";
+import React, { useContext, useEffect, useState } from "react";
 import { RadioGroup as BaseRadioGroup } from "@headlessui/react";
 import PageContext, { PAGES } from "../context/page-context";
 import {
   CssFramework,
-  GenerationMethod,
-  Language,
   Settings,
   UiFramework,
 } from "../constants";
 import * as logo from "../assets/arrow.png";
 import htmlLogo from "../assets/html-logo.svg";
-import lightbulbLogo from "../assets/light-bulb.svg";
-import lightbulbDarkLogo from "../assets/light-bulb-dark.svg";
 import reactLogo from "../assets/react-logo.svg";
 import cssLogo from "../assets/css-logo.svg";
 import tailwindcssLogo from "../assets/tailwindcss-logo.svg";
-import javascriptLogo from "../assets/javascript-logo.svg";
-import typescriptLogo from "../assets/typescript-logo.svg";
 import Button from "../components/Button";
-import { EVENT_SAVE_SETTINGS } from "../analytic/amplitude";
 
 type Option<T> = {
   id: T;
   name: string;
   logo: string;
 };
-
-const GenerationMethods: Option<GenerationMethod>[] = [
-  { id: GenerationMethod.withai, name: "With AI", logo: lightbulbLogo },
-  {
-    id: GenerationMethod.withoutai,
-    name: "Without AI",
-    logo: lightbulbDarkLogo,
-  },
-];
 
 const UiFrameworks: Option<UiFramework>[] = [
   { id: UiFramework.html, name: "HTML", logo: htmlLogo },
@@ -45,11 +29,6 @@ const CssFrameworks: Option<CssFramework>[] = [
   { id: CssFramework.tailwindcss, name: "TailwindCSS", logo: tailwindcssLogo },
 ];
 
-const Languages: Option<Language>[] = [
-  { id: Language.javascript, name: "JavaScript", logo: javascriptLogo },
-  { id: Language.typescript, name: "TypeScript", logo: typescriptLogo },
-];
-
 function classNames(...classes) {
   return classes.filter(Boolean).join(" ");
 }
@@ -57,8 +36,6 @@ function classNames(...classes) {
 function updateSettings(
   uiFramework: string,
   cssFramework: string,
-  language: string,
-  generationMethod: string
 ) {
   parent.postMessage(
     {
@@ -67,12 +44,10 @@ function updateSettings(
         settings: {
           uiFramework,
           cssFramework,
-          language,
-          generationMethod,
         } as Settings,
       },
     },
-    "*" //TODO: can use different origin??
+    "*"
   );
 }
 
@@ -106,9 +81,9 @@ const RadioGroup = ({
   disabled = false,
 }: {
   value: string;
-  onChange: (value: string) => void;
+  onChange: React.Dispatch<any>;
   label: string;
-  options: Option<Language | UiFramework | CssFramework | GenerationMethod>[];
+  options: Option<UiFramework | CssFramework>[];
   disabled?: boolean;
 }) => (
   <BaseRadioGroup value={value} onChange={onChange} disabled={disabled}>
@@ -135,28 +110,21 @@ const RadioGroup = ({
 
 interface Props {
   selectedUiFramework: UiFramework;
-  setSelectedUiFramework: (value: UiFramework) => void;
   selectedCssFramework: CssFramework;
-  setSelectedCssFramework: (value: CssFramework) => void;
-  selectedLanguage: Language;
-  setSelectedLanguage: (value: Language) => void;
-  selectedGenerationMethod: GenerationMethod;
-  limit: number;
-  setSelectedGenerationMethod: (value: GenerationMethod) => void;
 }
 
 const CodeOutputSetting: React.FC<Props> = ({
   selectedUiFramework,
-  setSelectedUiFramework,
   selectedCssFramework,
-  setSelectedCssFramework,
-  selectedLanguage,
-  limit,
-  setSelectedLanguage,
-  selectedGenerationMethod,
-  setSelectedGenerationMethod,
 }) => {
   const { previousPage, setCurrentPage } = useContext(PageContext);
+
+  const [displayUiFramework, setDisplayUiFramework] = useState(
+    selectedUiFramework,
+  );
+  const [displayCssFramework, setDisplayCssFramework] = useState(
+    selectedCssFramework,
+  );
 
   const handleBackClick = () => {
     setCurrentPage(previousPage);
@@ -164,29 +132,16 @@ const CodeOutputSetting: React.FC<Props> = ({
 
   const handleSaveButtonClick = () => {
     updateSettings(
-      selectedUiFramework,
-      selectedCssFramework,
-      selectedLanguage,
-      selectedGenerationMethod
+      displayUiFramework,
+      displayCssFramework,
     );
     setCurrentPage(PAGES.HOME);
-
-    parent.postMessage(
-      {
-        pluginMessage: {
-          type: "analytics",
-          eventName: EVENT_SAVE_SETTINGS,
-          eventProperties: {
-            uiFramework: selectedUiFramework,
-            cssFramework: selectedCssFramework,
-            language: selectedLanguage,
-            generationMethod: selectedGenerationMethod,
-          },
-        },
-      },
-      "*"
-    );
   };
+
+  useEffect(() => {
+    setDisplayUiFramework(selectedUiFramework);
+    setDisplayCssFramework(selectedCssFramework);
+  }, []);
 
   return (
     <div className="h-full w-full flex flex-col justify-between items-center px-3 py-5">
@@ -207,30 +162,16 @@ const CodeOutputSetting: React.FC<Props> = ({
 
         <div className="my-6 mx-2 flex flex-col gap-8">
           <RadioGroup
-            value={selectedGenerationMethod}
-            onChange={setSelectedGenerationMethod}
-            label="Generation Method"
-            disabled={limit === 0 || selectedUiFramework === UiFramework.html}
-            options={GenerationMethods}
-          />
-          <RadioGroup
-            value={selectedUiFramework}
-            onChange={setSelectedUiFramework}
+            value={displayUiFramework}
+            onChange={setDisplayUiFramework}
             label="UI Framework"
             options={UiFrameworks}
           />
           <RadioGroup
-            value={selectedCssFramework}
-            onChange={setSelectedCssFramework}
+            value={displayCssFramework}
+            onChange={setDisplayCssFramework}
             label="CSS Framework"
             options={CssFrameworks}
-          />
-          <RadioGroup
-            value={selectedLanguage}
-            onChange={setSelectedLanguage}
-            label="Language"
-            disabled={selectedUiFramework === UiFramework.html}
-            options={Languages}
           />
         </div>
       </div>

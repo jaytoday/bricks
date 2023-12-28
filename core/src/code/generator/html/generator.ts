@@ -1,4 +1,4 @@
-import { isEmpty } from "../../../utils";
+import { getTextDescendants, isEmpty } from "../../../utils";
 import { Option, UiFramework } from "../../code";
 import {
   ImageNode,
@@ -8,36 +8,18 @@ import {
   VectorNode,
   TextNode,
 } from "../../../bricks/node";
-import {
-  Attributes,
-  ExportFormat,
-  StyledTextSegment,
-} from "../../../design/adapter/node";
-import { generateProps } from "../../../../ee/loop/data-array-registry";
+import { Attributes, StyledTextSegment } from "../../../design/adapter/node";
 import { nameRegistryGlobalInstance } from "../../name-registry/name-registry";
-import { Component, Data, DataArr } from "../../../../ee/loop/component";
-import {
-  getVariableProp,
-  getTextVariableProp,
-  getWidthAndHeightVariableProp,
-} from "../../../../ee/code/prop";
-import { componentRegistryGlobalInstance } from "../../../../ee/loop/component-registry";
-import { codeSampleRegistryGlobalInstance } from "../../../../ee/loop/code-sample-registry";
+import { assetRegistryGlobalInstance } from "../../asset-registry/asset-registry";
 
 type GetPropsFromNode = (node: Node, option: Option) => string;
 export type GetPropsFromAttributes = (
   attributes: Attributes,
   option: Option,
-  id?: string,
+  node: Node,
   // sometimes needed because the value of an attribute can depend on the parent's attributes
   parentCssAttributes?: Attributes
 ) => string;
-
-export type ImportedComponentMeta = {
-  node: VectorGroupNode | VectorNode | ImageNode;
-  importPath: string;
-  componentName: string;
-};
 
 export type InFileComponentMeta = {
   componentCode: string;
@@ -86,7 +68,19 @@ export class Generator {
 
         const children: Node[] = node.getChildren();
 
-        if (isEmpty(children)) {
+        if (isEmpty(children) && htmlTag === "input") {
+          delete node.cssAttributes["min-width"];
+          node.addCssAttributes({
+            "background-color": "transparent",
+            width: "100%",
+          });
+
+          const inputClassProps = this.getPropsFromNode(node, option);
+          // TODO: style placeholder text
+          return `<input placeholder="${textProp}" ${inputClassProps}></input>`;
+        }
+
+        if (isEmpty(children) && htmlTag !== "input") {
           return `<${htmlTag} ${attributes}${textNodeClassProps}>${textProp}</${htmlTag}>`;
         }
 
@@ -99,7 +93,7 @@ export class Generator {
         return await this.generateHtmlFromNodes(
           children,
           [
-            `<${htmlTag} ${attributes} ${textNodeClassProps}>${textProp} {" "}`,
+            `<${htmlTag} ${attributes} ${textNodeClassProps}>${textProp} &nbsp;`,
             `</${htmlTag}>`,
           ],
           option
@@ -107,29 +101,38 @@ export class Generator {
       }
 
       case NodeType.GROUP:
-        // this edge case should never happen
+      case NodeType.VISIBLE: {
+        const props = this.getPropsFromNode(node, option);
         if (isEmpty(node.getChildren())) {
-          return `<${htmlTag}></${htmlTag}>`;
+          return `<${htmlTag} ${props}></${htmlTag}>`;
         }
 
-        const groupNodeClassProps = this.getPropsFromNode(node, option);
-        return await this.generateHtmlFromNodes(
-          node.getChildren(),
-          [`<${htmlTag} ${groupNodeClassProps}>`, `</${htmlTag}>`],
-          option
-        );
+        if (htmlTag === "input") {
+          // assume inputs only have one text child for now
+          const textDecendant = getTextDescendants(node)[0];
+          const otherChildren = node
+            .getChildren()
+            .filter((child) => child.id !== textDecendant.id);
 
-      case NodeType.VISIBLE:
-        const visibleNodeClassProps = this.getPropsFromNode(node, option);
-        if (isEmpty(node.getChildren())) {
-          return `<${htmlTag} ${visibleNodeClassProps}> </${htmlTag}>`;
+          if (otherChildren.length > 0) {
+            textDecendant.addAnnotations("htmlTag", "input");
+            return await this.generateHtmlFromNodes(
+              node.getChildren(),
+              [`<div ${props}>`, `</div>`],
+              option
+            );
+          }
+
+          // TODO: style placeholder text
+          return `<input placeholder="${textDecendant.getText()}" ${props}></input>`;
         }
 
         return await this.generateHtmlFromNodes(
           node.getChildren(),
-          [`<${htmlTag} ${visibleNodeClassProps}>`, `</${htmlTag}>`],
+          [`<${htmlTag} ${props}>`, `</${htmlTag}>`],
           option
         );
+      }
 
       // TODO: VECTOR_GROUP node type is deprecated
       case NodeType.VECTOR_GROUP:
@@ -137,11 +140,7 @@ export class Generator {
         const vectorGroupCodeString =
           await this.generateHtmlElementForVectorNode(vectorGroupNode, option);
 
-        return this.renderNodeWithPositionalAttributes(
-          vectorGroupNode,
-          vectorGroupCodeString,
-          option
-        );
+        return vectorGroupCodeString;
 
       case NodeType.VECTOR:
         const vectorNode = node as VectorGroupNode;
@@ -151,11 +150,7 @@ export class Generator {
         );
 
         if (isEmpty(node.getChildren())) {
-          return this.renderNodeWithPositionalAttributes(
-            vectorNode,
-            vectorCodeString,
-            option
-          );
+          return vectorCodeString;
         }
 
         const vectorNodeClassProps = this.getPropsFromNode(node, option);
@@ -198,43 +193,10 @@ export class Generator {
     option: Option
   ): Promise<string> {
     let childrenCodeStrings: string[] = [];
-    let repeatedComponents: Node[] = [];
-    let streak: boolean = false;
-
     for (const child of nodes) {
-      if (
-        option.uiFramework === UiFramework.react &&
-        componentRegistryGlobalInstance.getComponentByNodeId(child.getId()) &&
-        nodes.length > 2
-      ) {
-        streak = true;
-
-        repeatedComponents.push(child);
-        continue;
-      }
-
-      if (streak) {
-        const repeatedComponentsCodeString: string =
-          await this.generateCodeFromRepeatedComponents(
-            repeatedComponents,
-            option
-          );
-        childrenCodeStrings.push(repeatedComponentsCodeString);
-        streak = false;
-      }
-
       const codeString: string = await this.generateHtml(child, option);
 
       childrenCodeStrings.push(codeString);
-    }
-
-    if (streak) {
-      const repeatedComponentsCodeString: string =
-        await this.generateCodeFromRepeatedComponents(
-          repeatedComponents,
-          option
-        );
-      childrenCodeStrings.push(repeatedComponentsCodeString);
     }
 
     return openingTag + childrenCodeStrings.join("") + closingTag;
@@ -245,16 +207,13 @@ export class Generator {
     option: Option
   ): Promise<string> {
     const alt: string = getAltProp(node);
-
-    if (option.uiFramework === UiFramework.react) {
-      const src = getSrcProp(node);
-
-      let widthAndHeight: string = getWidthAndHeightProp(node);
-
-      return `<img ${widthAndHeight} src=${src} alt=${alt} />`;
-    }
-
-    return await node.export(ExportFormat.SVG);
+    const src = getSrcProp(node);
+    let widthAndHeight: string = getWidthAndHeightProp(node);
+    return this.renderImageWithPositionalAttributes(
+      node,
+      `${widthAndHeight} src=${src} alt=${alt}`,
+      option
+    );
   }
 
   private async generateHtmlElementForImageNode(
@@ -277,18 +236,19 @@ export class Generator {
         }
 
         return [
-          this.renderNodeWithPositionalAttributes(
+          this.renderImageWithPositionalAttributes(
             node,
-            `<img src=${srcValue} alt=${alt} ${widthAndHeight}/>`,
+            `src=${srcValue} alt=${alt} ${widthAndHeight}`,
             option
           ),
         ];
       }
 
       return [
-        this.renderNodeWithPositionalAttributes(
+        this.renderImageWithPositionalAttributes(
           node,
-          `<img src="./assets/${imageComponentName}.png" alt=${alt} ${widthAndHeight}/>`,
+          // TODO: change this to use getSrcProp
+          `src="./assets/${imageComponentName}.png" alt=${alt} ${widthAndHeight}`,
           option
         ),
       ];
@@ -297,99 +257,16 @@ export class Generator {
     return [`<div ${this.getPropsFromNode(node, option)}>`, `</div>`];
   }
 
-  renderNodeWithPositionalAttributes(
+  renderImageWithPositionalAttributes(
     node: ImageNode | VectorNode | VectorGroupNode,
-    inner: string,
+    props: string,
     option: Option
   ): string {
-    const positionalCssAttribtues: Attributes =
-      node.getPositionalCssAttributes();
-
-    const cssAttribtues: Attributes = node.getCssAttributes();
-
-    if (
-      positionalCssAttribtues["position"] === "absolute" ||
-      positionalCssAttribtues["margin-left"] ||
-      positionalCssAttribtues["margin-right"] ||
-      positionalCssAttribtues["margin-top"] ||
-      positionalCssAttribtues["margin-bottom"] ||
-      cssAttribtues["border-radius"]
-    ) {
-      return `<div ${this.getPropsFromNode(node, option)}>` + inner + `</div>`;
-    }
-
-    return inner;
-  }
-
-  async generateCodeFromRepeatedComponents(
-    nodes: Node[],
-    option: Option
-  ): Promise<string> {
-    const id: string = nodes[0].getId();
-    const component: Component =
-      componentRegistryGlobalInstance.getComponentByNodeId(id);
-    const dataArr: DataArr = component.getDataArr();
-    const data: Data[] = component.getData(nodes);
-
-    let renderInALoop: boolean = false;
-    if (!isEmpty(data)) {
-      renderInALoop = true;
-    }
-
-    const sample: object = data[0];
-    const generatedComponent = await this.generateHtml(nodes[0], option);
-
-    let componentCodeString: string = `const ${component.getName()} = ({
-      ${component.getPropNames().join(",")}
-    }) => (
-      ${generatedComponent}
-    );`;
-
-    this.inFileComponents.push({
-      componentCode: componentCodeString,
-    });
-
-    let codeStr: string = "";
-
-    if (renderInALoop) {
-      let dataCodeStr: string = `const ${dataArr.name} = ${JSON.stringify(
-        data
-      )};`;
-
-      let arrCodeStr: string = `{
-        ${dataArr.name}.map(({
-      ${Object.keys(sample).join(",")}
-        }) => <${component.getName()} ${generateProps(
-        dataArr.fieldToPropBindings
-      )} />)
-      }`;
-
-      this.inFileData.push({
-        dataCode: dataCodeStr,
-      });
-
-      codeSampleRegistryGlobalInstance.addCodeSample(
-        createMiniReactFile(componentCodeString, dataCodeStr, arrCodeStr)
-      );
-
-      return arrCodeStr;
-    }
-
-    for (const _ of nodes) {
-      codeStr += `<${component.getName()} />`;
-    }
-
-    return codeStr;
+    return `<img ${this.getPropsFromNode(node, option)} ${props}/>`;
   }
 
   getText(node: Node, option: Option): string {
     const textNode: TextNode = node as TextNode;
-
-    const prop: string = getTextVariableProp(node.getId());
-    if (!isEmpty(prop)) {
-      return prop;
-    }
-
     const styledTextSegments = textNode.getStyledTextSegments();
 
     // for keeping track of nested tags
@@ -409,17 +286,15 @@ export class Generator {
 
           if (listType === "none") {
             const result = this.wrapTextIfHasAttributes(
-              characters,
+              replaceLeadingWhiteSpaceAndNewLine(characters, option),
               href,
               cssAttributes,
               parentCssAttributes,
-              option
+              option,
+              node
             );
 
-            let newStr: string = replaceNewLine(result, option);
-            newStr = replaceLeadingWhiteSpace(newStr, option);
-
-            return newStr;
+            return result;
           }
 
           // create enough lists to match identation
@@ -445,7 +320,8 @@ export class Generator {
                     "margin-left": "40px",
                     "list-style-type": listType === "ul" ? "disc" : "decimal",
                   },
-                  option
+                  option,
+                  node
                 );
 
                 resultText += `<${listType} ${listProps}>`;
@@ -490,7 +366,7 @@ export class Generator {
 
               const lastListItem =
                 listItemArr[listItemIndex - 1] ||
-                styledTextSegmentArr[styledTextSegmentIndex - 1].characters ||
+                styledTextSegmentArr[styledTextSegmentIndex - 1]?.characters ||
                 "";
               if (hasOpenListItem && lastListItem.endsWith("\n")) {
                 result += "</li><li>";
@@ -501,7 +377,8 @@ export class Generator {
                 href,
                 cssAttributes,
                 parentCssAttributes,
-                option
+                option,
+                node
               );
 
               const isLastListItem = listItemIndex === listItemArr.length - 1;
@@ -533,7 +410,8 @@ export class Generator {
     href: string,
     cssAttributes: Attributes,
     parentCssAttributes: Attributes,
-    option: Option
+    option: Option,
+    node: Node
   ) {
     const resultText = escapeHtml(text);
 
@@ -547,7 +425,7 @@ export class Generator {
       ? ` ${this.getPropsFromAttributes(
           cssAttributes,
           option,
-          undefined,
+          node,
           parentCssAttributes
         )}`
       : "";
@@ -615,32 +493,47 @@ const getAttributeOverrides = (
   };
 };
 
-const replaceNewLine = (str: string, option: Option) => {
-  let newStrParts: string[] = [];
+const replaceLeadingWhiteSpaceAndNewLine = (
+  str: string,
+  option: Option
+): string => {
+  let newStr: string = "";
+  let streak: boolean = true;
+  let replacedWhiteSpaceIndex: Set<number> = new Set<number>();
   for (let i = 0; i < str.length; i++) {
-    if (str.charAt(i) === "\n") {
-      newStrParts.push(option.uiFramework === "html" ? "<br>" : "<br />");
-    }
-
-    newStrParts.push(str.charAt(i));
-  }
-
-  return newStrParts.join("");
-};
-
-const replaceLeadingWhiteSpace = (str: string, option: Option) => {
-  let newStrParts: string[] = [];
-  for (let i = 0; i < str.length; i++) {
-    if (str.charCodeAt(i) === 160) {
-      newStrParts.push("&nbsp;");
+    if ((str.charCodeAt(i) === 160 || str.charCodeAt(i) === 32) && streak) {
+      newStr += "&nbsp;";
+      streak = true;
+      replacedWhiteSpaceIndex.add(i);
       continue;
     }
 
-    newStrParts.push(str.substring(i));
+    streak = false;
+
+    if (str.charAt(i) === "\n") {
+      newStr += option.uiFramework === "html" ? "<br>" : "<br />";
+      streak = true;
+      continue;
+    }
+
+    newStr += str.charAt(i);
+  }
+
+  newStr = newStr.trimEnd();
+  for (let i = str.length - 1; i >= 0; i--) {
+    if (replacedWhiteSpaceIndex.has(i)) {
+      break;
+    }
+
+    if ((str.charCodeAt(i) === 160 || str.charCodeAt(i) === 32)) {
+      newStr += "&nbsp;";
+      continue;
+    }
+
     break;
   }
 
-  return newStrParts.join("");
+  return newStr;
 };
 
 const splitByNewLine = (text: string) => {
@@ -665,59 +558,29 @@ const splitByNewLine = (text: string) => {
 
 const getWidthAndHeightProp = (node: Node): string => {
   const cssAttribtues: Attributes = node.getCssAttributes();
-  let widthAndHeight: string = getWidthAndHeightVariableProp(node.getId());
-
-  if (
-    isEmpty(widthAndHeight) &&
-    cssAttribtues["width"] &&
-    cssAttribtues["height"]
-  ) {
+  if (cssAttribtues["width"] && cssAttribtues["height"]) {
     return `width="${cssAttribtues["width"]}" height="${cssAttribtues["height"]}"`;
   }
 
-  return widthAndHeight;
+  return "";
 };
 
 const getSrcProp = (node: Node): string => {
   const id: string = node.getId();
 
-  let fileExtension: string = "svg";
-  let componentName: string = nameRegistryGlobalInstance.getVectorName(id);
-
-  if (node.getType() === NodeType.IMAGE) {
-    fileExtension = "png";
-    componentName = nameRegistryGlobalInstance.getImageName(id);
-  }
-
-  const prop: string = getVariableProp(id, "src");
-  if (!isEmpty(prop)) {
-    return `{${prop}}`;
-  }
-
-  return `"./assets/${componentName}.${fileExtension}"`;
+  return `"${assetRegistryGlobalInstance?.getAssetById(id)?.src}"`;
 };
 
 const getAltProp = (node: Node): string => {
   const id: string = node.getId();
   const componentName: string = nameRegistryGlobalInstance.getAltName(id);
 
-  const prop: string = getVariableProp(id, "alt");
-  if (!isEmpty(prop)) {
-    return `{${prop}}`;
-  }
-
   return `"${componentName}"`;
 };
 
 const escapeHtml = (str: string) => {
-  return str.replace(/[&<>"'{}]/g, function (match) {
+  return str.replace(/["'{}]/g, function (match) {
     switch (match) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
       case '"':
         return "&quot;";
       case "'":
@@ -728,27 +591,4 @@ const escapeHtml = (str: string) => {
         return "&#125;";
     }
   });
-};
-
-const createMiniReactFile = (
-  componentCode: string,
-  dataCode: string,
-  arrCode: string
-) => {
-  return `
-  import React from "react"; 
-  import "./style.css";
-
-  ${componentCode}
-
-  ${dataCode}
-
-  const GeneratedComponent = (
-    <div>
-      ${arrCode}
-    </div>
-  );
-
-  export default GeneratedComponent;
-  `;
 };

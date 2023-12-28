@@ -11,10 +11,11 @@ import {
 } from "../design/adapter/node";
 import { createId, isEmpty } from "../utils";
 import { selectBox } from "./additional-css";
-import { filterAttributes } from "./util";
+import { doChildrenOverflowParent, filterAttributes } from "./util";
 
 export enum PostionalRelationship {
   INCLUDE = "INCLUDE",
+  COVER = "COVER",
   OVERLAP = "OVERLAP",
   COMPLETE_OVERLAP = "COMPLETE_OVERLAP",
   OUTSIDE = "OUTSIDE",
@@ -26,6 +27,7 @@ export type Option = {
   absolutePositioningFilter?: boolean;
   marginFilter?: boolean;
   excludeBackgroundColor?: boolean;
+  excludeWidthAndHeight?: boolean;
 };
 
 export type Node = GroupNode | VisibleNode | TextNode | VectorNode | ImageNode;
@@ -57,6 +59,10 @@ export class BaseNode {
 
   addChildren(children: Node[]) {
     this.children = this.children.concat(children);
+  }
+
+  addChildrenToFront(children: Node[]) {
+    this.children = [...children, ...this.children];
   }
 
   setPositionalCssAttributes(attributes: Attributes) {
@@ -140,69 +146,13 @@ export class BaseNode {
   }
 }
 
-function findIntersection(
-  rectangle1: BoxCoordinates,
-  rectangle2: BoxCoordinates
-): BoxCoordinates {
-  const xOverlap = Math.max(
-    0,
-    Math.min(rectangle1.rightBot.x, rectangle2.rightBot.x) -
-      Math.max(rectangle1.leftTop.x, rectangle2.leftTop.x)
-  );
-  const yOverlap = Math.max(
-    0,
-    Math.min(rectangle1.rightBot.y, rectangle2.rightBot.y) -
-      Math.max(rectangle1.leftTop.y, rectangle2.leftTop.y)
-  );
-
-  if (xOverlap === 0 || yOverlap === 0) {
-    return null; // No intersection
-  }
-
-  const intersection: BoxCoordinates = {
-    rightBot: {
-      x: Math.max(rectangle1.rightBot.x, rectangle2.rightBot.x),
-      y: Math.min(rectangle1.rightBot.y, rectangle2.rightBot.y),
-    },
-    rightTop: {
-      x: Math.min(rectangle1.rightTop.x, rectangle2.rightTop.x),
-      y: Math.max(rectangle1.rightTop.y, rectangle2.rightTop.y),
-    },
-    leftBot: {
-      x: Math.max(rectangle1.leftBot.x, rectangle2.leftBot.x),
-      y: Math.min(rectangle1.leftBot.y, rectangle2.leftBot.y),
-    },
-    leftTop: {
-      x: Math.max(rectangle1.leftTop.x, rectangle2.leftTop.x),
-      y: Math.max(rectangle1.leftTop.y, rectangle2.leftTop.y),
-    },
-  };
-
-  return intersection;
-}
-
 // doOverlap determines whether two boxes overlap with one another.
 export const doOverlap = (
   currentCoordinate: BoxCoordinates,
-  targetCoordinates: BoxCoordinates
+  targetCoordinates: BoxCoordinates,
+  overlapBuffer: number,
 ): boolean => {
-  const intersection: BoxCoordinates = findIntersection(
-    currentCoordinate,
-    targetCoordinates
-  );
 
-  if (!isEmpty(intersection)) {
-    const intersectionWidth: number = Math.abs(
-      intersection.leftTop.x - intersection.rightBot.x
-    );
-    const intersectionHeight: number = Math.abs(
-      intersection.leftTop.y - intersection.rightBot.y
-    );
-
-    if (intersectionWidth < 2 || intersectionHeight < 2) {
-      return false;
-    }
-  }
 
   if (
     currentCoordinate.leftTop.x === currentCoordinate.rightBot.x ||
@@ -219,15 +169,15 @@ export const doOverlap = (
   }
 
   if (
-    currentCoordinate.leftTop.x > targetCoordinates.rightBot.x ||
-    targetCoordinates.leftTop.x > currentCoordinate.rightBot.x
+    currentCoordinate.leftTop.x + overlapBuffer > targetCoordinates.rightBot.x ||
+    targetCoordinates.leftTop.x + overlapBuffer > currentCoordinate.rightBot.x
   ) {
     return false;
   }
 
   if (
-    currentCoordinate.rightBot.y < targetCoordinates.leftTop.y ||
-    targetCoordinates.rightBot.y < currentCoordinate.leftTop.y
+    currentCoordinate.rightBot.y < targetCoordinates.leftTop.y + overlapBuffer ||
+    targetCoordinates.rightBot.y < currentCoordinate.leftTop.y + overlapBuffer
   ) {
     return false;
   }
@@ -328,7 +278,18 @@ export const computePositionalRelationship = (
     return PostionalRelationship.INCLUDE;
   }
 
-  if (doOverlap(currentCoordinates, targetCoordinates)) {
+  const overlapBuffer: number = 2;
+
+  if (
+    targetCoordinates.leftTop.y + overlapBuffer <= currentCoordinates.leftTop.y &&
+    targetCoordinates.leftTop.x + overlapBuffer <= currentCoordinates.leftTop.x &&
+    targetCoordinates.rightBot.x >= currentCoordinates.rightBot.x + overlapBuffer &&
+    targetCoordinates.rightBot.y >= currentCoordinates.rightBot.y + overlapBuffer
+  ) {
+    return PostionalRelationship.OVERLAP;
+  }
+
+  if (doOverlap(currentCoordinates, targetCoordinates, overlapBuffer)) {
     return PostionalRelationship.OVERLAP;
   }
 
@@ -339,6 +300,7 @@ export class GroupNode extends BaseNode {
   readonly id: string;
   node?: AdaptedNode;
   absRenderingBox: BoxCoordinates;
+  absoluteBoundingBox: BoxCoordinates;
 
   constructor(children: Node[], node: AdaptedNode = null) {
     super();
@@ -359,6 +321,14 @@ export class GroupNode extends BaseNode {
   setChildren(children: Node[]) {
     this.children = children;
 
+
+
+    this.setWidthAndHeights();
+    this.absoluteBoundingBox = this.computeAbsoluteBoundingBox();
+    this.absRenderingBox = this.computeAbsRenderingBox();
+  }
+
+  setWidthAndHeights() {
     if (!isEmpty(this.node)) {
       const absBoundingBox: BoxCoordinates =
         this.node.getAbsoluteBoundingBoxCoordinates();
@@ -368,9 +338,36 @@ export class GroupNode extends BaseNode {
       this.cssAttributes["height"] = `${Math.abs(
         absBoundingBox.rightBot.y - absBoundingBox.rightTop.y
       )}px`;
+      return;
     }
 
-    this.absRenderingBox = this.computeAbsRenderingBox();
+    let xl = Infinity;
+    let xr = -Infinity;
+    let yt = Infinity;
+    let yb = -Infinity;
+
+    for (const child of this.getChildren()) {
+      let coordinates = selectBox(child, true);
+
+      if (coordinates.leftTop.x < xl) {
+        xl = coordinates.leftTop.x;
+      }
+
+      if (coordinates.rightBot.x > xr) {
+        xr = coordinates.rightBot.x;
+      }
+
+      if (coordinates.leftTop.y < yt) {
+        yt = coordinates.leftTop.y;
+      }
+
+      if (coordinates.rightBot.y > yb) {
+        yb = coordinates.rightBot.y;
+      }
+    }
+
+    this.cssAttributes["width"] = `${Math.abs(xr - xl)}px`;
+    this.cssAttributes["height"] = `${Math.abs(yb - yt)}px`;
   }
 
   getAbsRenderingBox() {
@@ -384,12 +381,17 @@ export class GroupNode extends BaseNode {
     return [width, height];
   }
 
-  getAbsBoundingBox() {
-    if (!isEmpty(this.node)) {
-      return this.node.getAbsoluteBoundingBoxCoordinates();
-    }
+  // getAbsBoundingBox() {
+  //   if (!isEmpty(this.node)) {
+  //     return this.node.getAbsoluteBoundingBoxCoordinates();
+  //   }
 
-    return this.getAbsRenderingBox();
+  //   return this.getAbsRenderingBox();
+  // }
+
+
+  getAbsBoundingBox() {
+    return this.absoluteBoundingBox;
   }
 
   getAbsBoundingBoxWidthAndHeight(): number[] {
@@ -410,6 +412,15 @@ export class GroupNode extends BaseNode {
     if (!isEmpty(targetNode.getACssAttribute("box-shadow"))) {
       targetBox = targetNode.getAbsBoundingBox();
     }
+
+    if (doChildrenOverflowParent(this)) {
+      currentBox = this.getAbsBoundingBox();
+    }
+
+    if (doChildrenOverflowParent(targetNode)) {
+      targetBox = targetNode.getAbsBoundingBox();
+    }
+
 
     return computePositionalRelationship(currentBox, targetBox);
   }
@@ -458,8 +469,59 @@ export class GroupNode extends BaseNode {
       }
     }
 
-    this.cssAttributes["width"] = `${Math.abs(xr - xl)}px`;
-    this.cssAttributes["height"] = `${Math.abs(yb - yt)}px`;
+    // this.cssAttributes["width"] = `${Math.abs(xr - xl)}px`;
+    // this.cssAttributes["height"] = `${Math.abs(yb - yt)}px`;
+
+    return {
+      leftTop: {
+        x: xl,
+        y: yt,
+      },
+      leftBot: {
+        x: xl,
+        y: yb,
+      },
+      rightTop: {
+        x: xr,
+        y: yt,
+      },
+      rightBot: {
+        x: xr,
+        y: yb,
+      },
+    };
+  }
+
+  private computeAbsoluteBoundingBox(): BoxCoordinates {
+    if (!isEmpty(this.node)) {
+      this.absoluteBoundingBox = this.node.getAbsoluteBoundingBoxCoordinates();
+      return this.absoluteBoundingBox;
+    }
+
+    let xl = Infinity;
+    let xr = -Infinity;
+    let yt = Infinity;
+    let yb = -Infinity;
+
+    for (const child of this.getChildren()) {
+      let coordinates = selectBox(child, true);
+
+      if (coordinates.leftTop.x < xl) {
+        xl = coordinates.leftTop.x;
+      }
+
+      if (coordinates.rightBot.x > xr) {
+        xr = coordinates.rightBot.x;
+      }
+
+      if (coordinates.leftTop.y < yt) {
+        yt = coordinates.leftTop.y;
+      }
+
+      if (coordinates.rightBot.y > yb) {
+        yb = coordinates.rightBot.y;
+      }
+    }
 
     return {
       leftTop: {

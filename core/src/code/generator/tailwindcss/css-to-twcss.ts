@@ -20,83 +20,59 @@ import {
 import { Attributes } from "../../../design/adapter/node";
 import { FontsRegistryGlobalInstance } from "./fonts-registry";
 import { Option, UiFramework } from "../../code";
-import { getVariablePropForTwcss } from "../../../../ee/code/prop";
 import { GetPropsFromAttributes } from "../html/generator";
-
-export type TwcssPropRenderingMeta = {
-  numberOfTwcssClasses: number;
-  filledClassIndexes: Set<number>;
-};
-
-export type TwcssPropRenderingMap = {
-  [cssKey: string]: TwcssPropRenderingMeta;
-};
+import { Node, NodeType } from "../../../bricks/node";
 
 // convertCssClassesToTwcssClasses converts css classes to tailwindcss classes
 export const convertCssClassesToTwcssClasses: GetPropsFromAttributes = (
   attributes: Attributes,
   option: Option,
-  id?: string,
+  node: Node,
   parentAttributes?: Attributes
 ) => {
   let classPropName: string = "class";
-  let variableProps: string = "";
-  const twcssPropRenderingMap: TwcssPropRenderingMap = {};
-
-  Object.entries(attributes).forEach(([property, value]) => {
-    const twcssClasses: string[] = getTwcssClass(
-      property,
-      value,
-      attributes,
-      parentAttributes
-    ).split(" ");
-    twcssPropRenderingMap[property] = {
-      numberOfTwcssClasses: twcssClasses.length,
-      filledClassIndexes: new Set<number>(),
-    };
-  });
 
   if (option.uiFramework === UiFramework.react) {
     classPropName = "className";
-    variableProps = getVariablePropForTwcss(id, twcssPropRenderingMap);
   }
 
   let content: string = "";
   Object.entries(attributes).forEach(([property, value]) => {
-    const twcssPropRenderingMeta: TwcssPropRenderingMeta =
-      twcssPropRenderingMap[property];
-    if (
-      twcssPropRenderingMeta.numberOfTwcssClasses ===
-      twcssPropRenderingMeta.filledClassIndexes.size
-    ) {
-      return;
-    }
+    const twcssClass: string = getTwcssClass(
+      property,
+      value,
+      attributes,
+      parentAttributes
+    );
 
-    for (let i = 0; i < twcssPropRenderingMeta.numberOfTwcssClasses; i++) {
-      const parts: string[] = getTwcssClass(
-        property,
-        value,
-        attributes,
-        parentAttributes
-      ).split(" ");
-      if (twcssPropRenderingMeta.filledClassIndexes.has(i)) {
-        continue;
-      }
-      content = content + " " + parts[i];
-    }
+    content = content + twcssClass + " ";
   });
 
-  content += variableProps;
+  content = filterContent(content, node);
 
   if (isEmpty(content)) {
     return "";
   }
 
-  if (!isEmpty(variableProps)) {
-    return `${classPropName}={\`${content.trim()}\`}`;
+  return `${classPropName}="${content.trim()}"`;
+};
+
+const filterContent = (content: string, node: Node) => {
+  const type: NodeType = node.getType();
+  if (type !== NodeType.VECTOR && type !== NodeType.IMAGE) {
+    return content;
   }
 
-  return `${classPropName}="${content.trim()}"`;
+  if (!isEmpty(node.getChildren())) {
+    return content;
+  }
+
+  let classNames: string[] = content.split(" ");
+  classNames = classNames.filter(
+    (className) => !className.startsWith("w-") && !className.startsWith("h-")
+  );
+
+  return classNames.join(" ");
 };
 
 // buildTwcssConfigFileContent builds file content for tailwind.config.js.
@@ -152,6 +128,10 @@ export const getImageFileNameFromUrl = (path: string) => {
 const findClosestTwcssColor = (cssColor: string) => {
   if (cssColor === "inherit") {
     return "inherit";
+  }
+
+  if (cssColor === "transparent") {
+    return "transparent";
   }
 
   if (cssColor === "currentColor") {
@@ -547,6 +527,10 @@ export const getTwcssClass = (
       return `min-w-[${minWidthNum}px]`;
 
     case "width":
+      if (cssValue === "100%") {
+        return "w-full";
+      }
+
       const widthNum = extractPixelNumberFromString(cssValue);
       if (cssValue.endsWith("px") && widthNum > largestTwcssWidthInPixels) {
         return `w-[${widthNum}px]`;
@@ -658,7 +642,30 @@ export const getTwcssClass = (
     }
 
     case "background-color":
-      return `bg-${findClosestTwcssColor(cssValue)}`;
+      if (cssValue === "transparent") {
+        return "bg-transparent";
+      } else {
+        return `bg-${findClosestTwcssColor(cssValue)}`;
+      }
+
+    case "background":
+      if (cssValue.startsWith("linear-gradient")) {
+        return convertLinearGradientToTwcssValues(cssValue);
+      }
+
+      if (cssValue.startsWith("radial-gradient")) {
+        // tailwindcss does not support radial gradient as for now
+        // return convertRadialGradientToTwcssValues(cssValue);
+      }
+
+      return "";
+
+    case "background-clip":
+      if (cssValue === "text") {
+        return "bg-clip-text";
+      }
+
+      return "";
 
     case "background-image":
       return `bg-${getImageFileNameFromUrl(cssValue)}`;
@@ -767,9 +774,9 @@ export const getTwcssClass = (
 
     case "justify-content": {
       switch (cssValue) {
-        case "flex-start":
+        case "start":
           return "justify-start";
-        case "flex-end":
+        case "end":
           return "justify-end";
         case "center":
           return "justify-center";
@@ -786,9 +793,9 @@ export const getTwcssClass = (
 
     case "align-items": {
       switch (cssValue) {
-        case "flex-start":
+        case "start":
           return "items-start";
-        case "flex-end":
+        case "end":
           return "items-end";
         case "center":
           return "items-center";
@@ -801,10 +808,10 @@ export const getTwcssClass = (
       }
     }
 
-    case "border-top":
-    case "border-bottom":
-    case "border-left":
-    case "border-right":
+    case "border-top-style":
+    case "border-bottom-style":
+    case "border-left-style":
+    case "border-right-style":
     case "border-style": {
       switch (cssValue) {
         case "solid":
@@ -1102,7 +1109,7 @@ const findClosestTwcssRotate = (cssValue: string) => {
   }
 
   if (Math.abs(minDiff) > 3) {
-    return rotatePrefix + "rotate" + `[${num}deg]`;
+    return rotatePrefix + "rotate-" + `[${num}deg]`;
   }
 
   return rotatePrefix + twcssClass;
@@ -1115,3 +1122,106 @@ const renderAbsolutePosition = (prefix: string, cssValue: string) => {
 
   return renderTwcssProperty(prefix, findClosestTwcssSize(cssValue));
 };
+
+const convertLinearGradientToTwcssValues = (cssValue: string) => {
+  let result: string = "";
+  const start: number = cssValue.indexOf("(");
+  const end: number = cssValue.lastIndexOf(")");
+  const linearGradientValue = cssValue.substring(start + 1, end);
+  const valuesStr: string[] = linearGradientValue.split("%,");
+  const angleStr: string[] = linearGradientValue.split(",");
+
+  if (isEmpty(valuesStr)) {
+    return "";
+  }
+
+  let closestDirection: string = "b";
+  const degrees: number[] = [90, 135, 180, 225, 180, -45, 0, 45];
+  const allDirections: string[] = ["r", "br", "b", "bl", "l", "tl", "t", "tr"];
+
+  let smallestDiff: number = Infinity;
+
+  if (angleStr[0].endsWith("deg")) {
+    const degNum: number = parseInt(angleStr[0].slice(0, -3));
+    if (!isEmpty(degNum)) {
+      let index: number = 0;
+
+      for (let i = 0; i < degrees.length; i++) {
+        const degree: number = degrees[i];
+        const diff: number = Math.abs(degree - degNum);
+        if (diff < smallestDiff) {
+          smallestDiff = diff;
+          index = i;
+        }
+      }
+
+      closestDirection = allDirections[index];
+
+      result += `bg-gradient-to-` + closestDirection + " ";
+    }
+
+    for (let i = 0; i < valuesStr.length; i++) {
+      const value: string = valuesStr[i];
+      const colorAndPercentageStr = value.split(" ");
+      const colorInRgb: string = colorAndPercentageStr[0];
+      const percentage: string = colorAndPercentageStr[1];
+
+      if (i === 0) {
+        const start: number = colorInRgb.indexOf("(");
+        const end: number = colorInRgb.lastIndexOf(")");
+        result += `from-[rgba(${colorInRgb.substring(start + 1, end)})] from-${percentage + "%"
+          } `;
+        continue;
+      }
+
+      if (i === valuesStr.length - 1) {
+        const percentage: string = colorAndPercentageStr[1];
+
+        result += `to-[${colorInRgb}] to-${percentage} `;
+        continue;
+      }
+
+      result += `via-[${colorInRgb}] via-${percentage + "%"} `;
+    }
+
+    return result.trim();
+  }
+
+  return "";
+};
+
+// const convertRadialGradientToTwcssValues = (cssValue: string) => {
+//   let result: string = "";
+//   const start: number = cssValue.indexOf("(");
+//   const end: number = cssValue.lastIndexOf(")");
+//   const radialGradientValue = cssValue.substring(start + 1, end);
+//   const valuesStr: string[] = radialGradientValue.split("%,");
+//   if (isEmpty(valuesStr)) {
+//     return "";
+//   }
+
+//   if (RadialGradientGlobalRegistry.getRadialGradientExist()) {
+//     result += `bg-gradient-radial `;
+//   }
+
+//   for (let i = 0; i < valuesStr.length; i++) {
+//     const value: string = valuesStr[i];
+//     const colorAndPercentageStr = value.split(" ");
+//     const colorInRgb: string = colorAndPercentageStr[0];
+//     const percentage: string = colorAndPercentageStr[1];
+
+//     if (i === 0) {
+//       result += `from-[${colorInRgb}] from-${percentage + "%"} `;
+//       continue;
+//     }
+
+//     if (i === valuesStr.length - 1) {
+//       result += `to-[${colorInRgb}] to-${percentage} `;
+//       continue;
+//     }
+
+//     result += `via-[${colorInRgb}] via-${percentage + "%"} `;
+//   }
+
+//   return result.trim();
+// };
